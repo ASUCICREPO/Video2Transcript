@@ -5,14 +5,25 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as os from 'os';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
-import * as cr from 'aws-cdk-lib/custom-resources';
-import * as logs from 'aws-cdk-lib/aws-logs';
-
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as codebuild from 'aws-cdk-lib/aws-codebuild';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import { Environment } from 'aws-cdk-lib/aws-appconfig';
 
 export class CdkBackendStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
     // AWS region should be us-west-2
+    const githubToken = this.node.tryGetContext('githubToken');
+
+    
+    if (!githubToken) {
+      throw new Error(
+        'GitHub token is required! Pass them using `-c githubToken=<token>`'
+      );
+    }
+
     const aws_region = cdk.Stack.of(this).region;
     const accountId = cdk.Stack.of(this).account;
     const hostArchitecture = os.arch(); 
@@ -22,13 +33,27 @@ export class CdkBackendStack extends cdk.Stack {
                                                 ? lambda.Architecture.ARM_64
                                                 : lambda.Architecture.X86_64;
 
-
     const dataBucket = new s3.Bucket(this, 'MeetingRecording', {
-      enforceSSL: true,
-      removalPolicy: cdk.RemovalPolicy.RETAIN
-    });
+  enforceSSL: true,
+  removalPolicy: cdk.RemovalPolicy.RETAIN,
+  
+  cors: [{
+    allowedMethods: [
+      s3.HttpMethods.PUT,
+      s3.HttpMethods.GET,
+      s3.HttpMethods.HEAD,
+      s3.HttpMethods.POST,
+      s3.HttpMethods.DELETE,
+      
+    ],
+    allowedOrigins: ['*'],  
+    allowedHeaders: ['*'],
+    exposedHeaders: ['ETag'],
+    
+  }]
+});
 
-    const prefixes = ['data_automation_result/', 'meeting_videos/', ];
+    const prefixes = ['transcription_results/', 'meeting_videos/', ];
 
     prefixes.forEach(prefix => {
       new s3deploy.BucketDeployment(this, `Deploy${prefix.replace('/', '')}`, {
@@ -38,107 +63,166 @@ export class CdkBackendStack extends cdk.Stack {
       })
     });
 
-    const createBDAProject = new lambda.DockerImageFunction(this, 'createBDAProject', {
-      code: lambda.DockerImageCode.fromImageAsset('lambda/CreateDataAutomationProject/'), 
-      architecture: lambdaArchitecture,
-      memorySize: 256, 
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        REGION: aws_region,
-      },
+    // Create a role that restricts frontend S3 access
+    const frontendRestrictedRole = new iam.Role(this, 'FrontendRestrictedRole', {
+      assumedBy: new iam.AccountRootPrincipal(),
+      description: 'Role that grants write access to meeting_recordings/ and read access to transcription_results/',
+      roleName: 'FrontendRestrictedRole',
     });
 
-    // Create a custom resource provider that wraps the Lambda
-    const provider = new cr.Provider(this, 'BDAProjectProvider', {
-      onEventHandler: createBDAProject,
-     logRetention: logs.RetentionDays.ONE_WEEK,
-    });
-
-    // Instantiate a custom resource to trigger the Lambda during deployment.
-    const bdaProjectResource = new cdk.CustomResource(this, 'TriggerBDAProjectCreation', {
-      serviceToken: provider.serviceToken,
-      properties: {
-        REGION: aws_region,
-        Trigger: 'RunOnce',
-      },
-    });
-
-    const abcdef = bdaProjectResource.toString();
-    const projectArn = bdaProjectResource.getAtt('ProjectArn').toString();
-
-
-    // const projectArn = bdaProjectResource.getAtt('ProjectArn').toString();
-
-    // Grant the Lambda read permissions on the bucket
-    dataBucket.grantRead(createBDAProject);
-    createBDAProject.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['bedrock:*'],
-      resources: ['*'],
+    // Grant write permission to the meeting_recordings/ folder
+    frontendRestrictedRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['s3:PutObject'],
+      resources: [`${dataBucket.bucketArn}/meeting_videos/*`],
     }));
 
-    const StartBDAjob = new lambda.Function(this, 'StartBDAjob', {
-      runtime: lambda.Runtime.PYTHON_3_9,
-      handler: 'handler.lambda_handler', // "handler" is the filename, and "lambda_handler" is the function name.
-      code: lambda.Code.fromDockerBuild('lambda/DataAutomationStartJob/',
-        {
-          targetStage: 'builder',
+    // Grant read permission to the transcription_results/ folder
+    frontendRestrictedRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject'],
+      resources: [`${dataBucket.bucketArn}/transcription_results/*`],
+    }));
+
+    const githubToken_secret_manager = new secretsmanager.Secret(this, 'GitHubToken', {
+      secretName: 'meeting_summarizer-github-token',
+      description: 'GitHub Personal Access Token for Amplify',
+      secretStringValue: cdk.SecretValue.unsafePlainText(githubToken)
+    });
+
+    const buildSpecYaml = codebuild.BuildSpec.fromObjectToYaml({
+      version: '1.0',
+      frontend: {
+        phases: {
+          preBuild: {
+            commands: [
+              'cd frontend',
+              'npm ci'
+            ],
+          },
+          build: {
+            commands: [
+              'npm run build'
+            ],
+          },
+        },
+        artifacts: {
+          baseDirectory: 'frontend/build',
+          files: ['**/*']
+        },
+        cache: {
+          paths: [
+            'frontend/node_modules/**/*'
+          ]
         }
-      ), 
-      timeout: cdk.Duration.seconds(30), 
-      architecture: lambdaArchitecture,
-      memorySize: 256, 
+      }
+    });
+
+    // Define the Amplify App using the CloudFormation resource type.
+    // const VideoToTranscriptUI = new cdk.CfnResource(this, 'VideoToTranscriptUI', {
+    //   type: 'AWS::Amplify::App',
+    //   properties: {
+    //     Name: 'VideoToTranscriptUI',
+    //     Description: 'A web application for uploading meeting videos and generating transcripts.',
+    //     // Repository: 'https://github.com/ASUCICREPO/PDF_accessability_UI',
+    //     OauthToken: githubToken,
+    //     BuildSpec: buildSpecYaml,
+    //     EnvironmentVariables: {
+    //       'VITE_BUCKET_NAME': dataBucket.bucketName,
+    //       'VITE_REGION': aws_region,
+    //       'VITE_MEETING_VIDEOS_FOLDER': prefixes[0],
+    //       'VITE_TRANSCRIPT_FOLDER': prefixes[1],
+    //       'VITE_ASSUME_ROLE_API_URL'
+    //     },
+    //       }}
+    //     );
+
+    
+
+    
+
+    const transcriptionLambda = new lambda.Function(this, 'TranscriptionLambda', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'app.lambda_handler',
+      code: lambda.Code.fromAsset('lambda/StartTranscriptionJob'),
       environment: {
-        REGION: aws_region,
-        MEETING_VIDEOS_PREFIX: prefixes[1],
-        DATA_AUTOMATION_RESULT_PREFIX: prefixes[0],
         BUCKET_NAME: dataBucket.bucketName,
-        BDA_PROJECT_ARN: projectArn,
+        OUTPUT_FOLDER: prefixes[0],
       },
+      architecture: lambdaArchitecture,
+      timeout: cdk.Duration.minutes(1),
     });
     
-    // policies
-    dataBucket.grantReadWrite(StartBDAjob);
-    StartBDAjob.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['bedrock:*'],
+    dataBucket.grantReadWrite(transcriptionLambda);
+    transcriptionLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['transcribe:StartTranscriptionJob'],
       resources: ['*'],
     }));
+    dataBucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.LambdaDestination(transcriptionLambda), {
+      prefix: 'meeting_videos/'
+    });
 
-    const generate_summary = new lambda.Function(this, 'GenerateSummary', {
+    const assumeRoleLambda = new lambda.Function(this, 'AssumeRoleLambda', {
       runtime: lambda.Runtime.PYTHON_3_9,
-      handler: 'handler.lambda_handler', // "handler" is the filename, and "lambda_handler" is the function name.
-      code: lambda.Code.fromDockerBuild('lambda/GenerateSummary/',
-        {
-          targetStage: 'builder',
-        }
-      ), 
-      timeout: cdk.Duration.seconds(30), 
-      architecture: lambdaArchitecture,
-      memorySize: 256, 
+      handler: 'app.handler',
+      code: lambda.Code.fromAsset('lambda/AssumeRoleFunction'),
       environment: {
+        FRONTEND_ROLE_ARN: frontendRestrictedRole.roleArn,
         REGION: aws_region,
-        MEETING_VIDEOS_PREFIX: prefixes[1],
-        DATA_AUTOMATION_RESULT_PREFIX: prefixes[0],
-        BUCKET_NAME: dataBucket.bucketName,
+      },
+      timeout: cdk.Duration.seconds(10),
+    });
+
+    // Grant the Lambda permission to call STS:AssumeRole
+    assumeRoleLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['sts:AssumeRole'],
+      resources: [frontendRestrictedRole.roleArn],
+    }));
+
+    // Create an API Gateway REST API for the assumeRole Lambda function
+    const assumeRoleApi = new apigateway.LambdaRestApi(this, 'AssumeRoleApi', {
+      handler: assumeRoleLambda,
+      proxy: false,
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowMethods: apigateway.Cors.ALL_METHODS,
       },
     });
 
-    dataBucket.grantReadWrite(generate_summary);
-    generate_summary.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['bedrock:*'],
-      resources: ['*'],
-    }));
+    // Add a resource and GET method
+    const assumeRoleResource = assumeRoleApi.root.addResource('assumerole');
+    assumeRoleResource.addMethod('GET'); // GET /assumerole
 
 
-
-    new cdk.CfnOutput(this, 'DataBucketName', {
+    new cdk.CfnOutput(this, 'BucketName', {
       value: dataBucket.bucketName,
-      description: 'The name of the S3 bucket for video inputs.',
+      description: 'The name of the S3 bucket',
     });
 
-    new cdk.CfnOutput(this, 'BDAProjectArn', {
-      value: projectArn,
-      description: 'ARN of the created BDA Project',
+    new cdk.CfnOutput(this, 'FrontendRestrictedRoleArn', {
+      value: frontendRestrictedRole.roleArn,    
+      description: 'The ARN of the frontend restricted role',
     });
+
+    new cdk.CfnOutput(this, 'region', {
+      value: aws_region,
+      description: 'The AWS region',
+    });
+    new cdk.CfnOutput(this, 'meeting_folder', {
+      value: prefixes[0],
+      description: 'The folder for meeting videos', 
+    });
+    new cdk.CfnOutput(this, 'transcript_folder', {
+      value: prefixes[1],
+      description: 'The folder for transcripts', 
+    });
+    new cdk.CfnOutput(this, 'AssumeRoleApiUrl', {
+      value: assumeRoleApi.url,
+      description: 'The URL for the AssumeRole API Gateway',
+    });
+
+      
+    
+
+    
     
   }
   
