@@ -88,77 +88,25 @@ export class CdkBackendStack extends cdk.Stack {
       secretStringValue: cdk.SecretValue.unsafePlainText(githubToken)
     });
 
-    const buildSpecYaml = codebuild.BuildSpec.fromObjectToYaml({
-      version: '1.0',
-      frontend: {
-        phases: {
-          preBuild: {
-            commands: [
-              'cd frontend',
-              'npm ci'
-            ],
-          },
-          build: {
-            commands: [
-              'npm run build'
-            ],
-          },
-        },
-        artifacts: {
-          baseDirectory: 'frontend/build',
-          files: ['**/*']
-        },
-        cache: {
-          paths: [
-            'frontend/node_modules/**/*'
-          ]
-        }
-      }
-    });
+    // Convert the build spec object to a string (if .toString() produces the YAML string)
+const buildSpecYaml = codebuild.BuildSpec.fromObjectToYaml({
+  version: '1.0',
+  frontend: {
+    phases: {
+      preBuild: { commands: ['cd frontend', 'npm ci'] },
+      build: { commands: ['npm run build'] },
+    },
+    artifacts: {
+      baseDirectory: 'frontend/build',
+      files: ['**/*']
+    },
+    cache: {
+      paths: ['frontend/node_modules/**/*']
+    }
+  }
+}).toString();
 
-    // Define the Amplify App using the CloudFormation resource type.
-    // const VideoToTranscriptUI = new cdk.CfnResource(this, 'VideoToTranscriptUI', {
-    //   type: 'AWS::Amplify::App',
-    //   properties: {
-    //     Name: 'VideoToTranscriptUI',
-    //     Description: 'A web application for uploading meeting videos and generating transcripts.',
-    //     // Repository: 'https://github.com/ASUCICREPO/PDF_accessability_UI',
-    //     OauthToken: githubToken,
-    //     BuildSpec: buildSpecYaml,
-    //     EnvironmentVariables: {
-    //       'VITE_BUCKET_NAME': dataBucket.bucketName,
-    //       'VITE_REGION': aws_region,
-    //       'VITE_MEETING_VIDEOS_FOLDER': prefixes[0],
-    //       'VITE_TRANSCRIPT_FOLDER': prefixes[1],
-    //       'VITE_ASSUME_ROLE_API_URL'
-    //     },
-    //       }}
-    //     );
 
-    
-
-    
-
-    const transcriptionLambda = new lambda.Function(this, 'TranscriptionLambda', {
-      runtime: lambda.Runtime.PYTHON_3_12,
-      handler: 'app.lambda_handler',
-      code: lambda.Code.fromAsset('lambda/StartTranscriptionJob'),
-      environment: {
-        BUCKET_NAME: dataBucket.bucketName,
-        OUTPUT_FOLDER: prefixes[0],
-      },
-      architecture: lambdaArchitecture,
-      timeout: cdk.Duration.minutes(1),
-    });
-    
-    dataBucket.grantReadWrite(transcriptionLambda);
-    transcriptionLambda.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['transcribe:StartTranscriptionJob'],
-      resources: ['*'],
-    }));
-    dataBucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.LambdaDestination(transcriptionLambda), {
-      prefix: 'meeting_videos/'
-    });
 
     const assumeRoleLambda = new lambda.Function(this, 'AssumeRoleLambda', {
       runtime: lambda.Runtime.PYTHON_3_9,
@@ -190,6 +138,62 @@ export class CdkBackendStack extends cdk.Stack {
     // Add a resource and GET method
     const assumeRoleResource = assumeRoleApi.root.addResource('assumerole');
     assumeRoleResource.addMethod('GET'); // GET /assumerole
+
+    // Define the Amplify App using the CloudFormation resource type.
+    const VideoToTranscriptUI = new cdk.CfnResource(this, 'VideoToTranscriptUI', {
+      type: 'AWS::Amplify::App',
+      properties: {
+        Name: 'VideoToTranscriptUI',
+        Description: 'A web application for uploading meeting videos and generating transcripts.',
+        Repository: 'https://github.com/ASUCICREPO/Video2Transcript',
+        OauthToken: githubToken,
+        BuildSpec: buildSpecYaml,
+    
+        // Must be an array of { Name, Value } pairs:
+        EnvironmentVariables: [
+          { Name: 'VITE_BUCKET_NAME',         Value: dataBucket.bucketName },
+          { Name: 'VITE_REGION',              Value: aws_region },
+          { Name: 'VITE_MEETING_VIDEOS_FOLDER', Value: prefixes[1] },
+          { Name: 'VITE_TRANSCRIPT_FOLDER',     Value: prefixes[0] },
+          { Name: 'VITE_ASSUME_ROLE_API_URL',   Value: assumeRoleApi.url },
+        ],
+      }
+    });
+    
+    const mainBranch = new cdk.CfnResource(this, 'MainBranch', {
+      type: 'AWS::Amplify::Branch',
+      properties: {
+        AppId: VideoToTranscriptUI.ref, // reference to your Amplify App resource
+        BranchName: 'main',
+        // Optional: additional branch configuration
+        Description: 'Main branch for production',
+        Stage: 'PRODUCTION',
+      },
+    });
+    
+
+    const transcriptionLambda = new lambda.Function(this, 'TranscriptionLambda', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'app.lambda_handler',
+      code: lambda.Code.fromAsset('lambda/StartTranscriptionJob'),
+      environment: {
+        BUCKET_NAME: dataBucket.bucketName,
+        OUTPUT_FOLDER: prefixes[0],
+      },
+      architecture: lambdaArchitecture,
+      timeout: cdk.Duration.minutes(1),
+    });
+    
+    dataBucket.grantReadWrite(transcriptionLambda);
+    transcriptionLambda.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['transcribe:StartTranscriptionJob'],
+      resources: ['*'],
+    }));
+    dataBucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.LambdaDestination(transcriptionLambda), {
+      prefix: 'meeting_videos/'
+    });
+
+    
 
 
     new cdk.CfnOutput(this, 'BucketName', {
