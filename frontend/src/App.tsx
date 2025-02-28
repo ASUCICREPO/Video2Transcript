@@ -1,14 +1,15 @@
-import React, { useState } from 'react';
 import UploadSection from './components/UploadSection';
 import DownloadSection from './components/DownloadSection';
+import { TempCredentials } from './aws/getTempCreds';
+import { useState } from 'react';
 
 function App() {
   const [videoFileName, setVideoFileName] = useState<string>('');
-  const [tempCreds, setTempCreds] = useState<any>(null);
+  const [tempCreds, setTempCreds] = useState<TempCredentials | null>(null);
   const [pollingStarted, setPollingStarted] = useState<boolean>(false);
 
   // Callback from UploadSection with fileName and credentials
-  const handleUploadComplete = (fileName: string, creds: any) => {
+  const handleUploadComplete = (fileName: string, creds: TempCredentials) => {
     setVideoFileName(fileName);
     setTempCreds(creds);
     setPollingStarted(true);
@@ -50,14 +51,14 @@ function App() {
         }}
       >
         <UploadSection onUploadComplete={handleUploadComplete} />
-        {pollingStarted && (
-          <div style={{ marginTop: '2rem', width: '100%', maxWidth: '400px' }}>
-            <h2 style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>
-              Polling for Transcript
-            </h2>
-            <DownloadSection videoFileName={videoFileName} tempCreds={tempCreds} />
-          </div>
-        )}
+              {pollingStarted && tempCreds && (
+        <div style={{ marginTop: '2rem', width: '100%', maxWidth: '400px' }}>
+          <h2 style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>
+            Polling for Transcript
+          </h2>
+          <DownloadSection videoFileName={videoFileName} tempCreds={tempCreds} />
+        </div>
+      )}
       </main>
     </div>
   );

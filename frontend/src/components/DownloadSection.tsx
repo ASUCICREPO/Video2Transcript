@@ -46,7 +46,7 @@ const DownloadSection: React.FC<DownloadSectionProps> = ({ videoFileName, tempCr
       }
       const data = await response.json();
       const transcripts = data?.results?.transcripts || [];
-      const fullTranscript = transcripts.map((t: any) => t.transcript).join('\n');
+      const fullTranscript = transcripts.map((t: { transcript: string }) => t.transcript).join('\n');
       return fullTranscript;
     } catch (err) {
       console.error('Error processing transcript JSON:', err);

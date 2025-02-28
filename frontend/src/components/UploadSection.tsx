@@ -41,8 +41,17 @@ const UploadSection: React.FC<UploadSectionProps> = ({ onUploadComplete }) => {
       // Add a middleware to remove checksum headers
       s3Client.middlewareStack.add(
         (next) => async (args) => {
-          if (args.request.headers && args.request.headers['x-amz-checksum-algorithm']) {
-            delete args.request.headers['x-amz-checksum-algorithm'];
+          // Type assertion to handle the unknown type
+          if (args && 
+              typeof args === 'object' && 
+              'request' in args && 
+              args.request && 
+              typeof args.request === 'object' &&
+              'headers' in args.request) {
+                const request = args.request as { headers?: Record<string, string | string[] | undefined> };
+            if (request.headers && 'x-amz-checksum-algorithm' in request.headers) {
+              delete request.headers['x-amz-checksum-algorithm'];
+            }
           }
           return next(args);
         },
@@ -54,10 +63,7 @@ const UploadSection: React.FC<UploadSectionProps> = ({ onUploadComplete }) => {
       );
 
       // 3. Use the file's stream if available (fallback to file object)
-      const fileBody =
-        typeof selectedFile.stream === 'function'
-          ? selectedFile.stream()
-          : selectedFile;
+      const fileBody = selectedFile;
 
       // 4. Prepare upload parameters
       const params = {
