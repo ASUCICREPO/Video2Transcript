@@ -1,0 +1,23 @@
+digraph INFRA {
+  node [ color = "black", fillcolor = "#E6E6E6", height =1, style = "filled,bold,rounded", fontname = "Arial" ];
+  "MeetingRecording" [ label = "MeetingRecording
+(S3Bucket)", shape =cylinder, fillcolor = "#FFF5CD" ];
+  "FrontendRestrictedRole" [ label = "FrontendRestrictedRole
+(IAMRole)", shape =rectangle ];
+  "GitHubToken" [ label = "GitHubToken
+(SecretsManagerSecret)", shape =rectangle ];
+  "AssumeRoleLambda" [ label = "AssumeRoleLambda
+(LambdaFunction)", shape =rectangle, fillcolor = "#B7E0FF" ];
+  "AssumeRoleApi" [ label = "AssumeRoleApi
+(ApiGatewayRestApi)", shape =rectangle, fillcolor = "#E78F81" ];
+  "VideoToTranscriptUI" [ label = "VideoToTranscriptUI
+(AmplifyApp)", shape =rectangle, fillcolor = "#B7E0FF" ];
+  "TranscriptionLambda" [ label = "TranscriptionLambda
+(LambdaFunction)", shape =rectangle, fillcolor = "#B7E0FF" ];
+  "FrontendRestrictedRole" -> "MeetingRecording";
+  "AssumeRoleLambda" -> "FrontendRestrictedRole";
+  "AssumeRoleApi" -> "AssumeRoleLambda";
+  "VideoToTranscriptUI" -> "MeetingRecording";
+  "VideoToTranscriptUI" -> "AssumeRoleApi";
+  "TranscriptionLambda" -> "MeetingRecording";
+}

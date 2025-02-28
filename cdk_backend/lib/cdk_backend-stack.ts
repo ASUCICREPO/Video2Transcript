@@ -89,22 +89,25 @@ export class CdkBackendStack extends cdk.Stack {
     });
 
     // Convert the build spec object to a string (if .toString() produces the YAML string)
-const buildSpecYaml = codebuild.BuildSpec.fromObjectToYaml({
-  version: '1.0',
-  frontend: {
-    phases: {
-      preBuild: { commands: ['cd frontend', 'npm ci'] },
-      build: { commands: ['npm run build'] },
-    },
-    artifacts: {
-      baseDirectory: 'frontend/build',
-      files: ['**/*']
-    },
-    cache: {
-      paths: ['frontend/node_modules/**/*']
-    }
-  }
-}).toString();
+    const buildSpecYaml = `
+    version: 1.0
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - cd frontend
+        - npm ci
+    build:
+      commands:
+        - npm run build
+  artifacts:
+    baseDirectory: frontend/dist
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - frontend/node_modules/**/*
+    `;
 
 
 
@@ -139,6 +142,7 @@ const buildSpecYaml = codebuild.BuildSpec.fromObjectToYaml({
     const assumeRoleResource = assumeRoleApi.root.addResource('assumerole');
     assumeRoleResource.addMethod('GET'); // GET /assumerole
 
+    
     // Define the Amplify App using the CloudFormation resource type.
     const VideoToTranscriptUI = new cdk.CfnResource(this, 'VideoToTranscriptUI', {
       type: 'AWS::Amplify::App',
@@ -159,11 +163,13 @@ const buildSpecYaml = codebuild.BuildSpec.fromObjectToYaml({
         ],
       }
     });
-    
+
+    const shortAppId = VideoToTranscriptUI.getAtt('AppId');
+
     const mainBranch = new cdk.CfnResource(this, 'MainBranch', {
       type: 'AWS::Amplify::Branch',
       properties: {
-        AppId: VideoToTranscriptUI.ref, // reference to your Amplify App resource
+        AppId: shortAppId.toString(), // reference to your Amplify App resource
         BranchName: 'main',
         // Optional: additional branch configuration
         Description: 'Main branch for production',
